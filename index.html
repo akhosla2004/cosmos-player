@@ -1,0 +1,1129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cosmos Player</title>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;1,300&family=Inconsolata:wght@300;400&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ─────────────────────────────────────────────────────── reset ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --gold:     #c9a84c;
+      --text:     rgba(255,255,255,0.85);
+      --text-dim: rgba(255,255,255,0.38);
+      --green:    #1DB954;   /* Spotify brand green */
+    }
+
+    body {
+      background: #00000a;
+      color: var(--text);
+      font-family: 'Cormorant Garamond', serif;
+      overflow: hidden;
+      height: 100vh;
+      width: 100vw;
+      user-select: none;
+    }
+
+    /* ─────────────────────────────────────── Three.js canvas ── */
+    #canvas { position: fixed; inset: 0; z-index: 0; }
+
+    /* ─────────────────────────────────────── bloom overlay ── */
+    /*
+      Multi-layer CSS bloom simulates HDR glow from the sun.
+      Stacked radial-gradients at different radii + opacities.
+    */
+    #bloom-overlay {
+      position: fixed; inset: 0; z-index: 1; pointer-events: none;
+      background:
+        radial-gradient(ellipse  6%  6%  at 50% 50%, rgba(255,255,230,0.30) 0%, transparent 100%),
+        radial-gradient(ellipse 16% 16% at 50% 50%, rgba(255,220,120,0.18) 0%, transparent 100%),
+        radial-gradient(ellipse 32% 32% at 50% 50%, rgba(255,155, 45,0.10) 0%, transparent 100%),
+        radial-gradient(ellipse 55% 50% at 50% 50%, rgba(210, 85, 15,0.06) 0%, transparent 100%),
+        radial-gradient(ellipse 85% 75% at 50% 50%, rgba(110, 25,  0,0.04) 0%, transparent 100%);
+      animation: bloomPulse 4s ease-in-out infinite;
+    }
+    @keyframes bloomPulse { 0%,100%{opacity:1} 50%{opacity:.62} }
+
+    /* ─────────────────────────────────── nebula colour wash ── */
+    #nebula-overlay {
+      position: fixed; inset: 0; z-index: 2; pointer-events: none;
+      background:
+        radial-gradient(ellipse 60% 60% at  8% 18%, rgba(28, 8,85,0.28) 0%, transparent 60%),
+        radial-gradient(ellipse 50% 50% at 92% 82%, rgba( 0,38,95,0.22) 0%, transparent 60%),
+        radial-gradient(ellipse 42% 42% at 82%  8%, rgba(65, 0,55,0.16) 0%, transparent 60%);
+    }
+
+    /* ─────────────────────────────────── depth fog vignette ── */
+    #fog-overlay {
+      position: fixed; inset: 0; z-index: 2; pointer-events: none;
+      background: radial-gradient(ellipse 100% 100% at 50% 50%,
+        transparent 30%, rgba(3,5,22,0.50) 62%, rgba(1,2,14,0.88) 100%);
+    }
+
+    /* ════════════════════════════════════════════════════════════
+       AUTH / LOADING / IDLE SCREENS
+       All three sit at z-index 50, centred, with a glass panel.
+    ════════════════════════════════════════════════════════════ */
+    .screen {
+      position: fixed; inset: 0; z-index: 50;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 1.6rem;
+      background: rgba(0,0,12,0.78);
+      backdrop-filter: blur(18px);
+      transition: opacity 0.7s ease;
+    }
+    .screen.hidden { opacity: 0; pointer-events: none; }
+
+    .screen-title {
+      font-size: clamp(1.8rem, 4vw, 2.6rem);
+      font-style: italic; font-weight: 300;
+      letter-spacing: 0.04em; color: #fff;
+      text-shadow: 0 0 40px rgba(201,168,76,0.5);
+    }
+
+    .screen-sub {
+      font-family: 'Inconsolata', monospace;
+      font-size: 0.68rem; letter-spacing: 0.22em;
+      text-transform: uppercase; color: var(--text-dim);
+      max-width: 340px; text-align: center; line-height: 1.8;
+    }
+
+    /* Spotify-green connect button */
+    .btn-spotify {
+      display: flex; align-items: center; gap: 0.7rem;
+      padding: 0.75rem 2rem;
+      background: var(--green); border: none; border-radius: 50px;
+      color: #000; font-family: 'Inconsolata', monospace;
+      font-size: 0.75rem; letter-spacing: 0.18em; text-transform: uppercase;
+      cursor: pointer; pointer-events: all;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+      box-shadow: 0 0 24px rgba(29,185,84,0.35);
+    }
+    .btn-spotify:hover {
+      transform: scale(1.04);
+      box-shadow: 0 0 36px rgba(29,185,84,0.55);
+    }
+    .btn-spotify svg { width: 20px; height: 20px; fill: #000; }
+
+    /* Spinner for loading state */
+    .spinner {
+      width: 42px; height: 42px;
+      border: 2px solid rgba(255,255,255,0.12);
+      border-top-color: var(--gold);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ════════════════════════════════════════════════════════════
+       HUD — track info overlay (z-index 10, always present)
+    ════════════════════════════════════════════════════════════ */
+    #hud {
+      position: fixed; inset: 0; z-index: 10;
+      display: flex; flex-direction: column;
+      justify-content: space-between;
+      padding: 2.5rem 3rem; pointer-events: none;
+    }
+
+    #top-bar { display: flex; justify-content: space-between; align-items: flex-start; }
+
+    .logo {
+      font-family: 'Inconsolata', monospace;
+      font-size: 0.68rem; letter-spacing: 0.28em;
+      text-transform: uppercase; color: var(--text-dim);
+    }
+
+    /* Live Spotify badge top-right */
+    .spotify-badge {
+      display: flex; align-items: center; gap: 0.45rem;
+      font-family: 'Inconsolata', monospace;
+      font-size: 0.6rem; letter-spacing: 0.18em;
+      text-transform: uppercase; color: var(--green);
+    }
+    .spotify-badge svg { width: 14px; height: 14px; fill: var(--green); }
+
+    .bpm-display {
+      font-family: 'Inconsolata', monospace;
+      font-size: 0.62rem; letter-spacing: 0.2em;
+      color: var(--gold); text-align: right;
+    }
+    .bpm-display span { display: block; font-size: 1.4rem; letter-spacing: 0.05em; }
+
+    #track-info {
+      display: flex; align-items: flex-end;
+      justify-content: space-between; gap: 2rem;
+    }
+
+    .track-meta { max-width: 62%; }
+
+    .track-name {
+      font-size: clamp(1.5rem, 4vw, 2.8rem);
+      font-weight: 300; font-style: italic;
+      line-height: 1.1; letter-spacing: 0.02em;
+      color: #fff; text-shadow: 0 0 60px rgba(201,168,76,0.35);
+      transition: opacity 0.5s ease;
+    }
+
+    .track-artist {
+      margin-top: 0.4rem;
+      font-family: 'Inconsolata', monospace;
+      font-size: 0.68rem; letter-spacing: 0.3em;
+      text-transform: uppercase; color: var(--text-dim);
+      transition: opacity 0.5s ease;
+    }
+
+    .playback-status {
+      font-family: 'Inconsolata', monospace;
+      font-size: 0.65rem; letter-spacing: 0.2em;
+      color: var(--gold); text-transform: uppercase;
+      transition: color 0.5s ease; text-align: right;
+    }
+
+    /* Progress bar */
+    #progress-wrap {
+      width: 100%; height: 2px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 2px; margin-top: 0.8rem;
+      overflow: hidden;
+    }
+    #progress-bar {
+      height: 100%; width: 0%;
+      background: linear-gradient(90deg, var(--gold), rgba(255,200,80,0.5));
+      border-radius: 2px;
+      transition: width 1s linear;
+    }
+
+    .hint {
+      position: fixed; bottom: 1.6rem; left: 50%;
+      transform: translateX(-50%);
+      font-family: 'Inconsolata', monospace;
+      font-size: 0.58rem; letter-spacing: 0.25em;
+      color: var(--text-dim); text-transform: uppercase;
+      pointer-events: none; z-index: 11;
+      animation: fadeHint 4s ease 4s forwards;
+    }
+    @keyframes fadeHint { to { opacity: 0; } }
+
+    /* Scanlines */
+    body::after {
+      content: ''; position: fixed; inset: 0; z-index: 20; pointer-events: none;
+      background: repeating-linear-gradient(
+        0deg, transparent, transparent 2px,
+        rgba(0,0,0,0.032) 2px, rgba(0,0,0,0.032) 4px
+      );
+    }
+  </style>
+</head>
+<body>
+
+<!-- Three.js canvas (always visible behind everything) -->
+<canvas id="canvas"></canvas>
+
+<!-- Atmospheric overlays -->
+<div id="bloom-overlay"></div>
+<div id="nebula-overlay"></div>
+<div id="fog-overlay"></div>
+
+<!-- ══════════════════════════════════════════════════════════
+     SCREEN 1 — Auth / login gate
+     Shown before the user has authorised with Spotify.
+     The "Connect" button triggers the PKCE OAuth flow.
+════════════════════════════════════════════════════════════ -->
+<div id="screen-auth" class="screen">
+  <div class="screen-title">Cosmos Player</div>
+  <div class="screen-sub">
+    Connect your Spotify account to visualise<br>
+    your currently playing track in real time.
+  </div>
+  <button class="btn-spotify" id="btn-login">
+    <!-- Spotify logo mark (inline SVG, no external dep) -->
+    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.441 17.278a.75.75 0 01-1.032.249c-2.827-1.727-6.39-2.117-10.586-1.159a.75.75 0 11-.334-1.463c4.588-1.047 8.523-.598 11.703 1.341a.75.75 0 01.249 1.032zm1.452-3.23a.937.937 0 01-1.29.308c-3.232-1.988-8.159-2.563-11.985-1.402a.938.938 0 01-.55-1.795c4.374-1.34 9.804-.69 13.518 1.598a.937.937 0 01.307 1.29zm.125-3.364c-3.876-2.302-10.277-2.514-13.982-1.391a1.125 1.125 0 01-.652-2.152c4.254-1.29 11.327-1.04 15.8 1.608a1.125 1.125 0 01-1.166 1.935z"/>
+    </svg>
+    Connect Spotify
+  </button>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     SCREEN 2 — Loading / polling
+════════════════════════════════════════════════════════════ -->
+<div id="screen-loading" class="screen hidden">
+  <div class="spinner"></div>
+  <div class="screen-sub">Connecting to Spotify…</div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     SCREEN 3 — Nothing playing
+════════════════════════════════════════════════════════════ -->
+<div id="screen-idle" class="screen hidden">
+  <div class="screen-title">Nothing playing</div>
+  <div class="screen-sub">
+    Play something on Spotify and<br>
+    the cosmos will come alive.
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     HUD — track info (always rendered; hidden by screens)
+════════════════════════════════════════════════════════════ -->
+<div id="hud">
+  <div id="top-bar">
+    <div class="logo">Cosmos Player</div>
+    <div style="display:flex;align-items:flex-start;gap:1.5rem;flex-direction:column;align-items:flex-end">
+      <div class="spotify-badge">
+        <svg viewBox="0 0 24 24"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.441 17.278a.75.75 0 01-1.032.249c-2.827-1.727-6.39-2.117-10.586-1.159a.75.75 0 11-.334-1.463c4.588-1.047 8.523-.598 11.703 1.341a.75.75 0 01.249 1.032zm1.452-3.23a.937.937 0 01-1.29.308c-3.232-1.988-8.159-2.563-11.985-1.402a.938.938 0 01-.55-1.795c4.374-1.34 9.804-.69 13.518 1.598a.937.937 0 01.307 1.29zm.125-3.364c-3.876-2.302-10.277-2.514-13.982-1.391a1.125 1.125 0 01-.652-2.152c4.254-1.29 11.327-1.04 15.8 1.608a1.125 1.125 0 01-1.166 1.935z"/></svg>
+        Live
+      </div>
+      <div class="bpm-display">BPM<span id="bpm-val">—</span></div>
+    </div>
+  </div>
+
+  <div id="track-info">
+    <div class="track-meta">
+      <div class="track-name"   id="track-name">—</div>
+      <div class="track-artist" id="track-artist"></div>
+      <div id="progress-wrap"><div id="progress-bar"></div></div>
+    </div>
+    <div class="playback-status" id="status"></div>
+  </div>
+</div>
+
+<div class="hint">Click the planet to play / pause</div>
+
+<!-- Three.js r128 from cdnjs -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<script>
+'use strict';
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+//  ██████╗ ██████╗ ███████╗ █████╗ ██████╗      ██████╗ ███████╗████████╗██╗   ██╗██████╗
+//  ██╔══██╗██╔══██╗██╔════╝██╔══██╗██╔══██╗    ██╔════╝ ██╔════╝╚══██╔══╝██║   ██║██╔══██╗
+//  ██████╔╝██████╔╝█████╗  ███████║██║  ██║    ╚█████╗  █████╗     ██║   ██║   ██║██████╔╝
+//  ██╔══██╗██╔══██╗██╔══╝  ██╔══██║██║  ██║     ╚═══██╗ ██╔══╝     ██║   ██║   ██║██╔═══╝
+//  ██║  ██║██║  ██║███████╗██║  ██║██████╔╝    ██████╔╝ ███████╗   ██║   ╚██████╔╝██║
+//  ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═════╝     ╚═════╝  ╚══════╝   ╚═╝    ╚═════╝ ╚═╝
+//
+//  ┌─────────────────────────────────────────────────────────────────────────────────┐
+//  │  SETUP INSTRUCTIONS                                                             │
+//  │                                                                                 │
+//  │  1. CREATE A SPOTIFY APP                                                        │
+//  │     • Go to https://developer.spotify.com/dashboard                             │
+//  │     • Click "Create app"                                                        │
+//  │     • Name: anything (e.g. "Cosmos Player")                                     │
+//  │     • Redirect URI: MUST match where you open this file.                        │
+//  │       - If opening from disk:   http://localhost:8080                           │
+//  │         (serve with: npx serve . or python -m http.server 8080)                 │
+//  │       - If hosting online:      https://yourdomain.com/path/to/index.html       │
+//  │     • Tick "Web API" under APIs used, then save.                                │
+//  │                                                                                 │
+//  │  2. PASTE YOUR CREDENTIALS BELOW                                                │
+//  │     • Copy your Client ID from the app dashboard                                │
+//  │     • Set REDIRECT_URI to exactly the URI you registered above                  │
+//  │                                                                                 │
+//  │  3. SERVE THE FILE (required — file:// URLs are blocked by Spotify)             │
+//  │     npx serve .         → opens on http://localhost:3000                        │
+//  │     python -m http.server 8080 → http://localhost:8080                          │
+//  │                                                                                 │
+//  │  4. CLICK "Connect Spotify", log in, and start playing a track.                 │
+//  │     The player polls every 3 seconds for the current track.                     │
+//  │                                                                                 │
+//  │  NOTE: You need a Spotify Premium account for playback control.                 │
+//  │        Free accounts can still show the currently-playing track.                │
+//  └─────────────────────────────────────────────────────────────────────────────────┘
+
+// ── ① PASTE YOUR SPOTIFY APP CREDENTIALS HERE ────────────────────────────────
+const SPOTIFY_CLIENT_ID  = '6f271de101464c99a0f9cf65c513074b';  // Spotify Client ID
+const REDIRECT_URI       = 'https://akhosla2004.github.io/cosmos-player/'; // ← must match exactly what you put in Spotify dashboard
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Scopes we need:
+//   user-read-currently-playing  — read the active track
+//   user-read-playback-state     — read is_playing, position, device
+//   user-modify-playback-state   — send play/pause commands
+const SCOPES = [
+  'user-read-currently-playing',
+  'user-read-playback-state',
+  'user-modify-playback-state',
+].join(' ');
+
+// Polling interval (ms) — Spotify rate-limits at ~100 req/min per user
+const POLL_INTERVAL = 3000;
+
+// Default BPM used until Spotify returns audio-features data
+const DEFAULT_BPM = 100;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  PKCE HELPERS
+//  The PKCE (Proof Key for Code Exchange) OAuth flow lets a purely client-side
+//  app authenticate with Spotify without ever exposing a client secret.
+//
+//  Flow summary:
+//    1. Generate a random code_verifier string.
+//    2. SHA-256 hash it → code_challenge.
+//    3. Redirect user to Spotify's /authorize with code_challenge.
+//    4. Spotify redirects back with ?code=...
+//    5. Exchange code + code_verifier for an access_token (no secret needed).
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Generate a cryptographically random string for the PKCE verifier */
+function generateVerifier(length = 128) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+  const arr   = crypto.getRandomValues(new Uint8Array(length));
+  return Array.from(arr, b => chars[b % chars.length]).join('');
+}
+
+/** SHA-256 hash the verifier, then Base64url-encode it → code_challenge */
+async function generateChallenge(verifier) {
+  const data    = new TextEncoder().encode(verifier);
+  const digest  = await crypto.subtle.digest('SHA-256', data);
+  return btoa(String.fromCharCode(...new Uint8Array(digest)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** Redirect the browser to Spotify's authorisation page */
+async function redirectToSpotify() {
+  const verifier   = generateVerifier();
+  const challenge  = await generateChallenge(verifier);
+
+  // Persist verifier so we can use it after the redirect-back
+  sessionStorage.setItem('pkce_verifier', verifier);
+
+  const params = new URLSearchParams({
+    client_id:             SPOTIFY_CLIENT_ID,
+    response_type:         'code',
+    redirect_uri:          REDIRECT_URI,
+    scope:                 SCOPES,
+    code_challenge_method: 'S256',
+    code_challenge:        challenge,
+  });
+
+  window.location.href = `https://accounts.spotify.com/authorize?${params}`;
+}
+
+/** Exchange the auth code for an access token (called on page-load after redirect) */
+async function exchangeCodeForToken(code) {
+  const verifier = sessionStorage.getItem('pkce_verifier');
+  if (!verifier) throw new Error('PKCE verifier missing from session');
+
+  const resp = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id:     SPOTIFY_CLIENT_ID,
+      grant_type:    'authorization_code',
+      code,
+      redirect_uri:  REDIRECT_URI,
+      code_verifier: verifier,
+    }),
+  });
+
+  if (!resp.ok) throw new Error(`Token exchange failed: ${resp.status}`);
+  const data = await resp.json();
+
+  // Store tokens in sessionStorage (cleared when tab closes)
+  sessionStorage.setItem('spotify_access_token',  data.access_token);
+  sessionStorage.setItem('spotify_refresh_token', data.refresh_token);
+  sessionStorage.setItem('spotify_token_expiry',
+    Date.now() + data.expires_in * 1000);
+
+  // Clean ?code= from the URL so a page-refresh doesn't re-submit the code
+  window.history.replaceState({}, '', window.location.pathname);
+
+  return data.access_token;
+}
+
+/** Refresh a stale access token using the refresh_token */
+async function refreshAccessToken() {
+  const refresh = sessionStorage.getItem('spotify_refresh_token');
+  if (!refresh) throw new Error('No refresh token');
+
+  const resp = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id:     SPOTIFY_CLIENT_ID,
+      grant_type:    'refresh_token',
+      refresh_token: refresh,
+    }),
+  });
+
+  if (!resp.ok) throw new Error(`Token refresh failed: ${resp.status}`);
+  const data = await resp.json();
+
+  sessionStorage.setItem('spotify_access_token', data.access_token);
+  sessionStorage.setItem('spotify_token_expiry',
+    Date.now() + data.expires_in * 1000);
+  if (data.refresh_token)
+    sessionStorage.setItem('spotify_refresh_token', data.refresh_token);
+
+  return data.access_token;
+}
+
+/** Return a valid access token, refreshing if needed */
+async function getToken() {
+  const expiry = Number(sessionStorage.getItem('spotify_token_expiry') || 0);
+  if (Date.now() > expiry - 60_000) {         // refresh 60 s before expiry
+    return await refreshAccessToken();
+  }
+  return sessionStorage.getItem('spotify_access_token');
+}
+
+/** Thin wrapper for Spotify API calls with auto-refresh on 401 */
+async function spotifyFetch(path, options = {}) {
+  let token = await getToken();
+  let resp  = await fetch(`https://api.spotify.com/v1${path}`, {
+    ...options,
+    headers: { Authorization: `Bearer ${token}`, ...options.headers },
+  });
+
+  // 401 → token truly expired; try one more refresh
+  if (resp.status === 401) {
+    token = await refreshAccessToken();
+    resp  = await fetch(`https://api.spotify.com/v1${path}`, {
+      ...options,
+      headers: { Authorization: `Bearer ${token}`, ...options.headers },
+    });
+  }
+  return resp;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  SPOTIFY PLAYER STATE
+// ═══════════════════════════════════════════════════════════════════════════════
+let spotifyState = {
+  trackId:    null,    // current Spotify track ID
+  trackName:  '—',
+  artist:     '',
+  albumArt:   null,    // image URL
+  bpm:        DEFAULT_BPM,
+  isPlaying:  false,
+  progressMs: 0,
+  durationMs: 1,
+};
+
+/**
+ * Fetch the currently playing track from Spotify.
+ * Returns true if a track is active, false if nothing is playing.
+ */
+async function fetchCurrentlyPlaying() {
+  try {
+    const resp = await spotifyFetch('/me/player');
+
+    // 204 = Spotify returned "no content" → nothing is playing
+    if (resp.status === 204 || resp.status === 202) return false;
+    if (!resp.ok) return false;
+
+    const data = await resp.json();
+    if (!data || !data.item) return false;
+
+    const track    = data.item;
+    const newId    = track.id;
+    const wasNew   = newId !== spotifyState.trackId;
+
+    spotifyState.trackId    = newId;
+    spotifyState.trackName  = track.name;
+    spotifyState.artist     = track.artists.map(a => a.name).join(', ');
+    // Best album art: prefer 300px image (index 1), fall back to largest (0)
+    spotifyState.albumArt   = track.album.images[1]?.url || track.album.images[0]?.url;
+    spotifyState.isPlaying  = data.is_playing;
+    spotifyState.progressMs = data.progress_ms || 0;
+    spotifyState.durationMs = track.duration_ms || 1;
+
+    // Fetch BPM from audio-features only when the track changes (avoid extra calls)
+    if (wasNew) {
+      fetchBPM(newId);
+      loadAlbumTexture(spotifyState.albumArt);
+      updateHUD();
+    }
+
+    return true;
+  } catch (err) {
+    console.warn('[Spotify] fetchCurrentlyPlaying error:', err);
+    return false;
+  }
+}
+
+/**
+ * Fetch tempo (BPM) from Spotify's audio-features endpoint.
+ * This is a separate call because it can take a moment.
+ */
+async function fetchBPM(trackId) {
+  try {
+    const resp = await spotifyFetch(`/audio-features/${trackId}`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (data.tempo) {
+      spotifyState.bpm = Math.round(data.tempo);
+      // Recompute orbit speed with new BPM
+      recalcOrbitSpeed();
+      document.getElementById('bpm-val').textContent = spotifyState.bpm;
+    }
+  } catch (err) {
+    console.warn('[Spotify] fetchBPM error:', err);
+  }
+}
+
+/**
+ * Toggle play/pause on the user's active Spotify device.
+ * Requires Premium. Free accounts will get a 403 — handled gracefully.
+ */
+async function toggleSpotifyPlayback() {
+  try {
+    const endpoint = spotifyState.isPlaying ? '/me/player/pause' : '/me/player/play';
+    const resp     = await spotifyFetch(endpoint, { method: 'PUT' });
+    if (resp.status === 403) {
+      console.warn('[Spotify] Playback control requires Spotify Premium.');
+    } else {
+      // Optimistic UI update; next poll will confirm
+      spotifyState.isPlaying = !spotifyState.isPlaying;
+      syncPlaybackState();
+    }
+  } catch (err) {
+    console.warn('[Spotify] togglePlayback error:', err);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  THREE.JS WORLD
+// ═══════════════════════════════════════════════════════════════════════════════
+const canvasEl = document.getElementById('canvas');
+const renderer = new THREE.WebGLRenderer({ canvas: canvasEl, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.physicallyCorrectLights = true;
+renderer.outputEncoding           = THREE.sRGBEncoding;
+renderer.toneMapping              = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure      = 1.15;
+
+const scene  = new THREE.Scene();
+scene.fog    = new THREE.FogExp2(0x020410, 0.00075);  // deep-space exponential fog
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 3000);
+camera.position.set(0, 65, 225);
+camera.lookAt(0, 0, 0);
+
+// ─────────────────────────────────────────────────────── STARS ──
+function buildStars() {
+  const count = 5000;
+  const geo   = new THREE.BufferGeometry();
+  const pos   = new Float32Array(count * 3);
+  const col   = new Float32Array(count * 3);
+  const sz    = new Float32Array(count);
+
+  for (let i = 0; i < count; i++) {
+    const r     = 700 + Math.random() * 1400;
+    const theta = Math.random() * Math.PI * 2;
+    const phi   = Math.acos(2 * Math.random() - 1);
+    pos[i*3]   = r * Math.sin(phi) * Math.cos(theta);
+    pos[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
+    pos[i*3+2] = r * Math.cos(phi);
+
+    // Stellar spectral type colour distribution
+    const spec = Math.random();
+    if      (spec < 0.08) { col[i*3]=0.80; col[i*3+1]=0.88; col[i*3+2]=1.00; } // O/B blue
+    else if (spec < 0.18) { col[i*3]=1.00; col[i*3+1]=0.97; col[i*3+2]=0.85; } // G yellow
+    else if (spec < 0.26) { col[i*3]=1.00; col[i*3+1]=0.75; col[i*3+2]=0.50; } // K orange
+    else                  { col[i*3]=0.92; col[i*3+1]=0.92; col[i*3+2]=0.95; } // M white
+
+    sz[i] = Math.random() < 0.06 ? 2.0 + Math.random() * 1.6 : 0.4 + Math.random() * 1.1;
+  }
+
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color',    new THREE.BufferAttribute(col, 3));
+  geo.setAttribute('size',     new THREE.BufferAttribute(sz,  1));
+
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      attribute float size;  attribute vec3 color;
+      varying   vec3  vColor; uniform float uTime;
+      void main() {
+        vColor = color;
+        float phase   = position.x*0.013 + position.y*0.009 + position.z*0.007;
+        float twinkle = 0.80 + 0.20*sin(uTime*1.9 + phase);
+        vec4 mv = modelViewMatrix * vec4(position,1.0);
+        gl_PointSize = size * twinkle * (280.0 / -mv.z);
+        gl_Position  = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vColor;
+      void main() {
+        float d = length(gl_PointCoord - 0.5);
+        if (d > 0.5) discard;
+        float a = 1.0 - smoothstep(0.12, 0.50, d);
+        gl_FragColor = vec4(vColor, a);
+      }
+    `,
+    transparent: true, depthWrite: false,
+    blending: THREE.AdditiveBlending, vertexColors: true
+  });
+
+  scene.add(new THREE.Points(geo, mat));
+  return mat;   // returned so animate() can update uTime
+}
+const starMat = buildStars();
+
+// ─────────────────────────────────────────────── NEBULA FOG ──
+//  Large Gaussian-falloff splats scattered in a torus band.
+//  Layered with additive blending they produce volumetric colour fog.
+(function buildNebulaFog() {
+  const COUNT = 320;
+  const geo   = new THREE.BufferGeometry();
+  const pos   = new Float32Array(COUNT * 3);
+  const col   = new Float32Array(COUNT * 3);
+  const sz    = new Float32Array(COUNT);
+
+  const palette = [
+    [0.16,0.04,0.26], [0.04,0.09,0.28], [0.26,0.06,0.04],
+    [0.04,0.16,0.20], [0.18,0.10,0.28], [0.08,0.05,0.22],
+  ];
+
+  for (let i = 0; i < COUNT; i++) {
+    const angle  = Math.random() * Math.PI * 2;
+    const radial = 200 + Math.random() * 600;
+    pos[i*3]   = Math.cos(angle) * radial;
+    pos[i*3+1] = (Math.random() - 0.5) * 220;
+    pos[i*3+2] = Math.sin(angle) * radial;
+    const c = palette[Math.floor(Math.random() * palette.length)];
+    const b = 0.35 + Math.random() * 0.65;
+    col[i*3]=c[0]*b; col[i*3+1]=c[1]*b; col[i*3+2]=c[2]*b;
+    sz[i] = 80 + Math.random() * 260;
+  }
+
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color',    new THREE.BufferAttribute(col, 3));
+  geo.setAttribute('size',     new THREE.BufferAttribute(sz,  1));
+
+  scene.add(new THREE.Points(geo, new THREE.ShaderMaterial({
+    vertexShader: `
+      attribute float size; attribute vec3 color; varying vec3 vColor;
+      void main() {
+        vColor = color;
+        gl_Position  = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+        gl_PointSize = size * (650.0 / -gl_Position.z);
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vColor;
+      void main() {
+        vec2 uv = gl_PointCoord - 0.5;
+        if (length(uv) > 0.5) discard;
+        float a = exp(-dot(uv,uv)*10.0) * 0.20;
+        gl_FragColor = vec4(vColor, a);
+      }
+    `,
+    transparent: true, depthWrite: false, depthTest: false,
+    blending: THREE.AdditiveBlending, vertexColors: true
+  })));
+})();
+
+// ──────────────────────────────────────────────────── SUN ──
+const SUN_R  = 22;
+const coronaMats = [];   // collected for uTime updates
+
+const sunMat = new THREE.ShaderMaterial({
+  uniforms: { uTime: { value: 0 } },
+  vertexShader: `
+    varying vec3 vNormal; varying vec2 vUv;
+    void main() {
+      vNormal = normalize(normalMatrix * normal);
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+    }
+  `,
+  fragmentShader: `
+    uniform float uTime;
+    varying vec3  vNormal; varying vec2 vUv;
+
+    float hash(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
+    float noise(vec2 p){
+      vec2 i=floor(p); vec2 f=fract(p); f=f*f*(3.0-2.0*f);
+      return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),
+                 mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x),f.y);
+    }
+    float fbm(vec2 p){ float v=0.,a=.5; for(int j=0;j<4;j++){v+=a*noise(p);p*=2.1;a*=.5;} return v; }
+
+    void main() {
+      float n  = fbm(vUv*5.0 + vec2(uTime*.05,0));
+      n       += 0.3*fbm(vUv*10.5 - vec2(uTime*.07,uTime*.03));
+      vec3 col = mix(vec3(1.0,0.18,0.0), vec3(1.0,0.96,0.5), clamp(n*1.5,0.,1.));
+      float cth = max(0., dot(normalize(vNormal),vec3(0,0,1)));
+      col *= 0.35 + 0.65*pow(cth, 0.38);
+      col += vec3(1.0,0.55,0.12) * pow(1.-cth, 3.5) * 1.5;
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `
+});
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(SUN_R, 64, 64), sunMat));
+
+// Corona shell helper (BackSide additive sphere)
+function addCorona(radius, frag) {
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `varying vec3 vN; void main(){ vN=normalize(normalMatrix*normal); gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
+    fragmentShader: frag,
+    transparent: true, side: THREE.BackSide,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  coronaMats.push(mat);
+  scene.add(new THREE.Mesh(new THREE.SphereGeometry(radius, 32, 32), mat));
+}
+
+addCorona(SUN_R*1.30, `
+  varying vec3 vN; uniform float uTime;
+  void main(){
+    float c=abs(dot(vN,vec3(0,0,1))); float rim=1.-c;
+    float a=pow(rim,1.5)*1.10*(0.80+0.20*sin(uTime*2.2));
+    gl_FragColor=vec4(mix(vec3(1.,.9,.6),vec3(1.,.45,.05),c),a);
+  }
+`);
+addCorona(SUN_R*2.10, `
+  varying vec3 vN; uniform float uTime;
+  void main(){
+    float a=pow(1.-abs(dot(vN,vec3(0,0,1))),2.2)*.75*(0.72+0.28*sin(uTime*1.+.7));
+    gl_FragColor=vec4(1.,.42,.04,a);
+  }
+`);
+addCorona(SUN_R*3.80, `
+  varying vec3 vN; uniform float uTime;
+  void main(){
+    float a=pow(1.-abs(dot(vN,vec3(0,0,1))),3.)*.45*(0.85+0.15*sin(uTime*.55+2.));
+    gl_FragColor=vec4(.85,.25,0.,a);
+  }
+`);
+addCorona(SUN_R*6.5, `
+  varying vec3 vN; uniform float uTime;
+  void main(){
+    float a=pow(1.-abs(dot(vN,vec3(0,0,1))),4.5)*.22;
+    gl_FragColor=vec4(.6,.15,0.,a);
+  }
+`);
+
+// Flare cross-spikes
+const spikeMat = new THREE.ShaderMaterial({
+  uniforms: { uTime: { value: 0 } },
+  vertexShader: `varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
+  fragmentShader: `
+    uniform float uTime; varying vec2 vUv;
+    void main(){
+      float dist=abs(vUv.x-.5)*2.; float thin=abs(vUv.y-.5)*2.;
+      float a=pow(1.-dist,.55)*(1.-smoothstep(0.,.1,thin));
+      a*=.45*(.75+.25*sin(uTime*2.5));
+      gl_FragColor=vec4(1.,.88,.55,a);
+    }
+  `,
+  transparent:true, blending:THREE.AdditiveBlending, depthWrite:false, side:THREE.DoubleSide
+});
+coronaMats.push(spikeMat);
+[0, Math.PI/4, Math.PI/2, 3*Math.PI/4].forEach(a => {
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(SUN_R*8.5, SUN_R*0.09), spikeMat);
+  m.rotation.z = a;
+  scene.add(m);
+});
+
+// ──────────────────────────────────────────── ORBIT RING ──
+const ORBIT_R = 100;
+(function() {
+  const pts = [];
+  for (let i = 0; i <= 256; i++) {
+    const a = (i/256)*Math.PI*2;
+    pts.push(new THREE.Vector3(Math.cos(a)*ORBIT_R, 0, Math.sin(a)*ORBIT_R));
+  }
+  scene.add(new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineBasicMaterial({
+      color:0xaaddff, transparent:true, opacity:0.055,
+      blending:THREE.AdditiveBlending, depthWrite:false
+    })
+  ));
+})();
+
+// ──────────────────────────────────────────────── PLANET ──
+const PLANET_R  = 12;
+const planet    = new THREE.Mesh(
+  new THREE.SphereGeometry(PLANET_R, 80, 80),
+  new THREE.MeshStandardMaterial({ color: 0x3a6b9e, roughness: 0.75, metalness: 0.04 })
+);
+scene.add(planet);
+
+// Atmospheric rim glow
+const atmosMesh = new THREE.Mesh(
+  new THREE.SphereGeometry(PLANET_R * 1.14, 48, 48),
+  new THREE.ShaderMaterial({
+    vertexShader: `varying vec3 vN; void main(){ vN=normalize(normalMatrix*normal); gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
+    fragmentShader: `
+      varying vec3 vN;
+      void main(){
+        float rim=1.-abs(dot(vN,vec3(0,0,1)));
+        float a=pow(rim,2.6)*.72;
+        gl_FragColor=vec4(mix(vec3(.12,.38,1.),vec3(.04,.12,.58),pow(rim,2.)),a);
+      }
+    `,
+    transparent:true, side:THREE.BackSide,
+    blending:THREE.AdditiveBlending, depthWrite:false
+  })
+);
+scene.add(atmosMesh);
+
+// Texture loader — called when Spotify gives us a new album art URL
+const texLoader = new THREE.TextureLoader();
+let lastArtUrl  = null;
+
+function loadAlbumTexture(url) {
+  if (!url || url === lastArtUrl) return;
+  lastArtUrl = url;
+  texLoader.load(url,
+    (tex) => {
+      tex.encoding    = THREE.sRGBEncoding;
+      planet.material = new THREE.MeshStandardMaterial({
+        map: tex, roughness: 0.78, metalness: 0.04
+      });
+    },
+    undefined,
+    () => { console.warn('[Three.js] Album art load failed — keeping fallback.'); }
+  );
+}
+
+// ──────────────────────────────────────────────── LIGHTS ──
+// Primary sun key light — physically inverse-square (decay=2)
+const sunLight = new THREE.PointLight(0xffd070, 150, 0, 2);
+scene.add(sunLight);  // position stays at (0,0,0) — same as sun mesh
+
+// Secondary softer fill near corona
+const sunLight2 = new THREE.PointLight(0xff9930, 45, 180, 2);
+scene.add(sunLight2);
+
+// Nebula fill — faint blue-violet from "deep space" direction
+const nebulaFill = new THREE.PointLight(0x1a2a7a, 5.5, 900, 2);
+nebulaFill.position.set(-220, 50, -130);
+scene.add(nebulaFill);
+
+// Almost-zero ambient — space is dark
+scene.add(new THREE.AmbientLight(0x080c1c, 0.55));
+
+// Rim light — moves with planet, simulates solar-wind airglow
+const rimLight = new THREE.PointLight(0xff7722, 4.5, 350, 2);
+scene.add(rimLight);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  PLAYBACK WIRING
+// ═══════════════════════════════════════════════════════════════════════════════
+let isPlaying  = false;    // local mirror of spotifyState.isPlaying
+let speedScale = 0.0;      // lerped; drives orbit/spin speed
+const EASE     = 0.028;
+
+// BPM-derived orbit speed (recalculated when track changes)
+let orbitSpeed = (Math.PI * 2) / ((60 / DEFAULT_BPM) * 16);  // rad/s
+let spinSpeed  = orbitSpeed * 6;
+
+function recalcOrbitSpeed() {
+  const bpm  = spotifyState.bpm || DEFAULT_BPM;
+  orbitSpeed = (Math.PI * 2) / ((60 / bpm) * 16);
+  spinSpeed  = orbitSpeed * 6;
+}
+
+function syncPlaybackState() {
+  isPlaying = spotifyState.isPlaying;
+  const statusEl = document.getElementById('status');
+  statusEl.textContent = isPlaying ? '▶ Playing' : '❙❙ Paused';
+  statusEl.style.color = isPlaying ? 'var(--gold)' : 'rgba(255,255,255,0.28)';
+}
+
+function updateHUD() {
+  document.getElementById('track-name').textContent   = spotifyState.trackName;
+  document.getElementById('track-artist').textContent = '— ' + spotifyState.artist;
+  document.getElementById('bpm-val').textContent      = spotifyState.bpm || '—';
+  syncPlaybackState();
+}
+
+// ─────────────────────────────────────── raycasting click ──
+const raycaster = new THREE.Raycaster();
+const mouse     = new THREE.Vector2();
+
+window.addEventListener('pointerdown', async (e) => {
+  mouse.x =  (e.clientX / window.innerWidth)  * 2 - 1;
+  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  if (raycaster.intersectObject(planet).length > 0) {
+    // Try to control Spotify; fall back to local-only toggle if unavailable
+    if (sessionStorage.getItem('spotify_access_token')) {
+      await toggleSpotifyPlayback();
+    } else {
+      isPlaying = !isPlaying;
+      syncPlaybackState();
+    }
+  }
+});
+
+window.addEventListener('pointermove', (e) => {
+  mouse.x =  (e.clientX / window.innerWidth)  * 2 - 1;
+  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  canvasEl.style.cursor = raycaster.intersectObject(planet).length > 0 ? 'pointer' : 'default';
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  SCREEN MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════════
+const screens = {
+  auth:    document.getElementById('screen-auth'),
+  loading: document.getElementById('screen-loading'),
+  idle:    document.getElementById('screen-idle'),
+};
+
+function showScreen(name) {
+  Object.entries(screens).forEach(([k, el]) => {
+    el.classList.toggle('hidden', k !== name);
+  });
+}
+
+function hideAllScreens() {
+  Object.values(screens).forEach(el => el.classList.add('hidden'));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  POLLING LOOP
+//  Calls the Spotify API every POLL_INTERVAL ms.
+//  Shows/hides the "idle" screen and updates HUD + 3D world.
+// ═══════════════════════════════════════════════════════════════════════════════
+let pollTimer = null;
+
+async function poll() {
+  const playing = await fetchCurrentlyPlaying();
+
+  if (playing) {
+    hideAllScreens();
+    syncPlaybackState();
+    // Update progress bar
+    const pct = (spotifyState.progressMs / spotifyState.durationMs) * 100;
+    document.getElementById('progress-bar').style.width = `${pct.toFixed(1)}%`;
+  } else {
+    showScreen('idle');
+    isPlaying = false;
+    syncPlaybackState();
+  }
+}
+
+function startPolling() {
+  poll();                                         // immediate first call
+  pollTimer = setInterval(poll, POLL_INTERVAL);   // then every N seconds
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  ANIMATION LOOP
+// ═══════════════════════════════════════════════════════════════════════════════
+let orbitAngle = 0;
+const clock    = new THREE.Clock();
+const bloomEl  = document.getElementById('bloom-overlay');
+
+function animate() {
+  requestAnimationFrame(animate);
+  const delta   = clock.getDelta();
+  const elapsed = clock.getElapsedTime();
+
+  // Smooth play/pause easing
+  speedScale += ((isPlaying ? 1.0 : 0.0) - speedScale) * EASE;
+
+  // Shader time updates
+  sunMat.uniforms.uTime.value  = elapsed;
+  starMat.uniforms.uTime.value = elapsed;
+  coronaMats.forEach(m => { m.uniforms.uTime.value = elapsed; });
+
+  // Orbit + spin
+  orbitAngle        += orbitSpeed * speedScale * delta;
+  planet.rotation.y += spinSpeed  * speedScale * delta;
+  planet.rotation.x  = 0.19;
+
+  planet.position.set(
+    Math.cos(orbitAngle) * ORBIT_R,
+    Math.sin(orbitAngle * 1.3) * 7,
+    Math.sin(orbitAngle) * ORBIT_R
+  );
+
+  atmosMesh.position.copy(planet.position);
+  atmosMesh.rotation.copy(planet.rotation);
+
+  // Rim light follows planet
+  rimLight.position.set(
+    planet.position.x * 1.55,
+    planet.position.y - 18,
+    planet.position.z * 1.55
+  );
+
+  // CSS bloom pulse
+  bloomEl.style.opacity = 0.86 + 0.14 * Math.sin(elapsed * 0.55);
+
+  // Subtle cinematic camera drift
+  camera.position.x = Math.sin(elapsed * 0.034) * 15;
+  camera.position.y = 65 + Math.sin(elapsed * 0.021) * 8;
+  camera.lookAt(0, 0, 0);
+
+  renderer.render(scene, camera);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  AUTH FLOW BOOTSTRAP
+//  On every page load we check:
+//    A) Did Spotify redirect back with ?code=  → exchange it for a token
+//    B) Do we already have a valid token in sessionStorage → go straight to polling
+//    C) Otherwise → show the auth screen
+// ═══════════════════════════════════════════════════════════════════════════════
+async function bootstrap() {
+  animate();   // start the 3D loop immediately (looks good behind the auth screen)
+
+  // Case A — OAuth redirect-back
+  const params = new URLSearchParams(window.location.search);
+  const code   = params.get('code');
+  const error  = params.get('error');
+
+  if (error) {
+    showScreen('auth');
+    return;
+  }
+
+  if (code) {
+    showScreen('loading');
+    try {
+      await exchangeCodeForToken(code);
+      startPolling();
+    } catch (err) {
+      console.error('[Auth] Token exchange failed:', err);
+      showScreen('auth');
+    }
+    return;
+  }
+
+  // Case B — existing session
+  const existingToken = sessionStorage.getItem('spotify_access_token');
+  if (existingToken) {
+    showScreen('loading');
+    startPolling();
+    return;
+  }
+
+  // Case C — no token at all → show login screen
+  showScreen('auth');
+}
+
+// Wire up the Connect button
+document.getElementById('btn-login').addEventListener('click', redirectToSpotify);
+
+// Resize handler
+window.addEventListener('resize', () => {
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+});
+
+// Go!
+bootstrap();
+</script>
+</body>
+</html>
